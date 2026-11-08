@@ -8,6 +8,7 @@ import { soundManager } from '@/lib/audio';
 const NAV_ITEMS = [
   { label: 'Home', href: '/', icon: 'sports_esports' },
   { label: 'Arcade', href: '/games', icon: 'rocket_launch' },
+  { label: 'Diwali Cam', href: '/diwali-cam', icon: 'videocam' },
   { label: 'Rooms', href: '/multiplayer', icon: 'groups' },
   { label: 'Leaderboard', href: '/leaderboards', icon: 'emoji_events' },
   { label: 'Celebrate', href: '/festival', icon: 'flare' },

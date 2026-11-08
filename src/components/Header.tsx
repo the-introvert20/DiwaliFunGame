@@ -87,6 +87,15 @@ export default function Header({ showBack = false, title }: HeaderProps) {
         </div>
 
         <div className="flex items-center gap-space-sm flex-shrink-0">
+          <Link
+            href="/diwali-cam"
+            onClick={() => soundManager.playClick()}
+            className="hidden md:flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-surface-container border border-primary/30 hover:border-primary text-xs font-hud-code font-bold text-primary hover:bg-surface-container-high transition-all shadow-sm"
+          >
+            <span className="material-symbols-outlined text-[16px]">videocam</span>
+            <span>Diwali Cam</span>
+          </Link>
+
           <button
             aria-label="Toggle Audio SFX"
             onClick={handleToggleAudio}
