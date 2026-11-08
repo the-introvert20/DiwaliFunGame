@@ -1,0 +1,83 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Outfit:wght@600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-outfit: 'Outfit', sans-serif;
+    --font-geist: 'Geist', sans-serif;
+    --font-jetbrains-mono: 'JetBrains Mono', monospace;
+  }
+
+  html, body {
+    width: 100vw;
+    margin: 0;
+    padding: 0;
+    background-color: #131319;
+    color: #e5e1eb;
+    overscroll-behavior: none;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: var(--font-geist);
+  }
+
+  /* Safe area padding for mobile docks */
+  .pb-safe {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  }
+  .pt-safe {
+    padding-top: max(env(safe-area-inset-top, 0px), 8px);
+  }
+
+  /* Hide scrollbars while retaining scroll functionality */
+  .no-scrollbar::-webkit-scrollbar,
+  ::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Material Symbols configuration */
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-weight: normal;
+  font-style: normal;
+  font-size: 24px;
+  line-height: 1;
+  letter-spacing: normal;
+  text-transform: none;
+  display: inline-block;
+  white-space: nowrap;
+  word-wrap: normal;
+  direction: ltr;
+  -webkit-font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Glow effects matching DESIGN.md */
+.glow-primary {
+  box-shadow: 0 0 24px -4px rgba(232, 163, 60, 0.4), 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.glow-secondary {
+  box-shadow: 0 0 32px 0px rgba(242, 100, 25, 0.45);
+}
+
+.glow-tertiary {
+  box-shadow: 0 0 20px -2px rgba(0, 240, 255, 0.35);
+}
+
+/* Glassmorphic HUD overlay */
+.glass-hud {
+  background: rgba(33, 31, 40, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(246, 189, 96, 0.15);
+}
+
