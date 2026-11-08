@@ -22,7 +22,8 @@ function PartyRoomContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
 
-  const roomId = (params?.roomId as string) || 'DIWALI-PARTY';
+  const rawParam = (params?.roomId as string) || 'DIWALI-PARTY';
+  const roomId = decodeURIComponent(rawParam).trim().toUpperCase();
   const username = searchParams.get('name') || 'Festive Guest';
   const isHost = searchParams.get('role') === 'host';
   const initialCam = searchParams.get('cam') !== '0';

@@ -20,3 +20,4 @@ test('LiveKit Server SDK: Token generation generates valid JWT', async () => {
   assert.ok(typeof token === 'string');
   assert.ok(token.split('.').length === 3, 'JWT should have 3 segments');
 });
+

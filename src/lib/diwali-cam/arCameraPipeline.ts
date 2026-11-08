@@ -354,3 +354,4 @@ export class ARCameraPipeline {
     this.activeGestures = [];
   }
 }
+

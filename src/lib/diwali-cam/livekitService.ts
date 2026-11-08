@@ -1,5 +1,5 @@
 // DIWALI CAM — Live Video & Audio Party Service
-// Dual engine: Full LiveKit SFU Client with automatic WebRTC peer fallback for local/direct testing
+// Dual engine: Full LiveKit SFU Client with automatic Cross-Device WebRTC Peer Mesh fallback
 
 import { Room, RoomEvent, LocalVideoTrack, LocalAudioTrack, RemoteTrack, Track } from 'livekit-client';
 import { PartyParticipant, PartyChatMessage, RoomCelebrationEvent, DiwaliGestureType } from '@/types/diwali-cam';
@@ -14,10 +14,16 @@ export class LivekitPartyManager {
   private localVideoTrack: LocalVideoTrack | null = null;
   private localAudioTrack: LocalAudioTrack | null = null;
   private localProcessedStream: MediaStream | null = null;
+  private localRawAudioTrack: MediaStreamTrack | null = null;
 
   private participants: Map<string, PartyParticipant> = new Map();
   private broadcastChannel: BroadcastChannel | null = null;
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
+
+  // Cross-device signaling polling state
+  private pollIntervalId: any = null;
+  private lastSignalTimestamp: number = 0;
+  private isDestroyed: boolean = false;
 
   // Callbacks
   public onParticipantsChanged?: (participants: PartyParticipant[]) => void;
@@ -26,23 +32,25 @@ export class LivekitPartyManager {
   public onConnectionState?: (state: string, isLiveKit: boolean) => void;
 
   constructor() {
-    this.localId = 'user_' + Math.random().toString(36).substring(2, 9);
+    this.localId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substring(2, 7);
   }
 
   public async joinParty(
-    roomId: string,
+    rawRoomId: string,
     username: string,
     processedVideoStream: MediaStream,
     rawAudioTrack: MediaStreamTrack | null,
     isHost: boolean = false
   ) {
-    this.roomId = roomId;
+    this.isDestroyed = false;
+    this.roomId = (rawRoomId || 'DIWALI-PARTY').trim().toUpperCase();
     this.localName = username || 'Festive Guest';
     this.localProcessedStream = processedVideoStream;
+    this.localRawAudioTrack = rawAudioTrack;
 
-    this.onConnectionState?.('Connecting to room...', false);
+    this.onConnectionState?.('Connecting to Diwali Cam room...', false);
 
-    // Add local participant
+    // 1. Add local participant to UI
     const localPart: PartyParticipant = {
       id: this.localId,
       name: this.localName,
@@ -55,13 +63,13 @@ export class LivekitPartyManager {
     this.participants.set(this.localId, localPart);
     this.notifyParticipants();
 
-    // 1. Try requesting LiveKit server token
+    // 2. Try requesting LiveKit server token
     let tokenData: any = null;
     try {
       const res = await fetch('/api/livekit/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ room: roomId, username: this.localName }),
+        body: JSON.stringify({ room: this.roomId, username: this.localName }),
       });
       if (res.ok) {
         tokenData = await res.json();
@@ -70,24 +78,26 @@ export class LivekitPartyManager {
       console.warn('Could not contact LiveKit token API:', e);
     }
 
-    // 2. If LiveKit credentials configured, connect via LiveKit SFU
+    // 3. If LiveKit credentials configured, connect via LiveKit SFU
     if (tokenData && tokenData.configured && tokenData.token && tokenData.wsUrl) {
       try {
         await this.connectLiveKit(tokenData.wsUrl, tokenData.token, processedVideoStream, rawAudioTrack);
         this.isLiveKitActive = true;
-        this.onConnectionState?.('Connected via LiveKit SFU', true);
+        this.onConnectionState?.('Connected via LiveKit Cloud SFU', true);
         return;
       } catch (lkErr) {
         console.warn('LiveKit SFU connection error, switching to WebRTC Mesh fallback:', lkErr);
       }
     }
 
-    // 3. Fallback: WebRTC Peer Mesh via BroadcastChannel
-    this.onConnectionState?.('LiveKit keys not set — running in WebRTC Peer Room mode', false);
-    this.initPeerMesh(processedVideoStream, rawAudioTrack);
+    // 4. Fallback: Cross-Device WebRTC Mesh (works on separate phones, laptops, and networks without credentials)
+    this.onConnectionState?.('Connected (Direct Multi-Device WebRTC)', false);
+    this.initCrossDeviceMesh();
   }
 
-  // LiveKit SFU Connection
+  // -------------------------------------------------------------
+  // LiveKit SFU Implementation (when LiveKit credentials are set)
+  // -------------------------------------------------------------
   private async connectLiveKit(
     wsUrl: string,
     token: string,
@@ -107,6 +117,7 @@ export class LivekitPartyManager {
       this.onConnectionState?.('Disconnected', true);
     });
 
+    // Handle new participant joining
     this.room.on(RoomEvent.ParticipantConnected, (p) => {
       const part: PartyParticipant = {
         id: p.identity,
@@ -119,24 +130,34 @@ export class LivekitPartyManager {
       this.notifyParticipants();
     });
 
+    // Handle participant leaving
     this.room.on(RoomEvent.ParticipantDisconnected, (p) => {
       this.participants.delete(p.identity);
       this.notifyParticipants();
     });
 
+    // Handle subscribed tracks
     this.room.on(RoomEvent.TrackSubscribed, (track: RemoteTrack, publication, participant) => {
-      const existing = this.participants.get(participant.identity);
-      if (existing) {
-        if (track.kind === Track.Kind.Video) {
-          const stream = new MediaStream([track.mediaStreamTrack]);
-          existing.stream = stream;
-          existing.isVideoOff = false;
-        } else if (track.kind === Track.Kind.Audio) {
-          track.attach(); // Audio element play
-          existing.isMuted = false;
-        }
-        this.notifyParticipants();
+      let existing = this.participants.get(participant.identity);
+      if (!existing) {
+        existing = {
+          id: participant.identity,
+          name: participant.name || participant.identity,
+          isLocal: false,
+          isMuted: !participant.isMicrophoneEnabled,
+          isVideoOff: !participant.isCameraEnabled,
+        };
+        this.participants.set(participant.identity, existing);
       }
+
+      if (track.kind === Track.Kind.Video) {
+        existing.stream = new MediaStream([track.mediaStreamTrack]);
+        existing.isVideoOff = false;
+      } else if (track.kind === Track.Kind.Audio) {
+        track.attach();
+        existing.isMuted = false;
+      }
+      this.notifyParticipants();
     });
 
     this.room.on(RoomEvent.TrackUnsubscribed, (track, publication, participant) => {
@@ -163,8 +184,34 @@ export class LivekitPartyManager {
       }
     });
 
-    // Connect to room
+    // Connect to LiveKit room
     await this.room.connect(wsUrl, token);
+
+    // CRITICAL FIX: Immediately load any existing participants who were already in the room!
+    this.room.remoteParticipants.forEach((p) => {
+      const part: PartyParticipant = {
+        id: p.identity,
+        name: p.name || p.identity,
+        isLocal: false,
+        isMuted: !p.isMicrophoneEnabled,
+        isVideoOff: !p.isCameraEnabled,
+      };
+
+      p.trackPublications.forEach((pub) => {
+        if (pub.track) {
+          if (pub.kind === Track.Kind.Video) {
+            part.stream = new MediaStream([pub.track.mediaStreamTrack]);
+            part.isVideoOff = false;
+          } else if (pub.kind === Track.Kind.Audio) {
+            pub.track.attach();
+            part.isMuted = false;
+          }
+        }
+      });
+
+      this.participants.set(p.identity, part);
+    });
+    this.notifyParticipants();
 
     // Publish AR Processed Video Track
     const videoTrack = processedVideoStream.getVideoTracks()[0];
@@ -180,62 +227,226 @@ export class LivekitPartyManager {
     }
   }
 
-  // WebRTC Peer Mesh Fallback (works across browser tabs & windows locally)
-  private initPeerMesh(processedVideoStream: MediaStream, rawAudioTrack: MediaStreamTrack | null) {
-    if (typeof window === 'undefined' || !('BroadcastChannel' in window)) return;
+  // -------------------------------------------------------------
+  // Cross-Device WebRTC Mesh Fallback (Zero Config / Free)
+  // -------------------------------------------------------------
+  private initCrossDeviceMesh() {
+    const pcConfig: RTCConfiguration = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' },
+      ],
+    };
 
-    this.broadcastChannel = new BroadcastChannel(`diwali_cam_${this.roomId}`);
-
-    this.broadcastChannel.onmessage = async (event) => {
-      const data = event.data;
-      if (!data || data.senderId === this.localId) return;
-
-      if (data.type === 'PEER_JOIN') {
-        const remoteParticipant: PartyParticipant = {
-          id: data.senderId,
-          name: data.senderName,
-          isLocal: false,
-          isMuted: false,
-          isVideoOff: false,
-          stream: processedVideoStream.clone(), // In local mesh, attach stream
-        };
-        this.participants.set(data.senderId, remoteParticipant);
-        this.notifyParticipants();
-
-        // Send acknowledgement
-        this.broadcastChannel?.postMessage({
-          type: 'PEER_ACK',
-          senderId: this.localId,
-          senderName: this.localName,
+    // Helper to send a signaling packet via HTTP
+    const sendSignal = async (type: string, payload?: any, targetId?: string) => {
+      if (this.isDestroyed) return;
+      try {
+        await fetch('/api/diwali-cam/signal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            room: this.roomId,
+            senderId: this.localId,
+            senderName: this.localName,
+            targetId,
+            type,
+            payload,
+          }),
         });
-      } else if (data.type === 'PEER_ACK') {
-        if (!this.participants.has(data.senderId)) {
-          this.participants.set(data.senderId, {
-            id: data.senderId,
-            name: data.senderName,
-            isLocal: false,
-            isMuted: false,
-            isVideoOff: false,
-            stream: processedVideoStream.clone(),
-          });
-          this.notifyParticipants();
-        }
-      } else if (data.type === 'PEER_LEAVE') {
-        this.participants.delete(data.senderId);
-        this.notifyParticipants();
-      } else if (data.type === 'CHAT') {
-        this.onChatMessage?.(data.message);
-      } else if (data.type === 'CELEBRATION_TRIGGER') {
-        this.onRoomCelebration?.(data);
+      } catch (e) {
+        // network retry
       }
     };
 
-    // Announce presence
-    this.broadcastChannel.postMessage({
-      type: 'PEER_JOIN',
-      senderId: this.localId,
-      senderName: this.localName,
-    });
+    // Helper to create PeerConnection with a remote peer
+    const getOrCreatePeerConnection = (remoteId: string, remoteName: string): RTCPeerConnection => {
+      let pc = this.peerConnections.get(remoteId);
+      if (pc) return pc;
+
+      pc = new RTCPeerConnection(pcConfig);
+      this.peerConnections.set(remoteId, pc);
+
+      // Add local video & audio tracks
+      if (this.localProcessedStream) {
+        this.localProcessedStream.getTracks().forEach((track) => {
+          pc!.addTrack(track, this.localProcessedStream!);
+        });
+      }
+      if (this.localRawAudioTrack) {
+        pc.addTrack(this.localRawAudioTrack);
+      }
+
+      // Handle receiving remote tracks
+      pc.ontrack = (event) => {
+        const stream = event.streams[0] || new MediaStream([event.track]);
+        let participant = this.participants.get(remoteId);
+        if (!participant) {
+          participant = {
+            id: remoteId,
+            name: remoteName,
+            isLocal: false,
+            isMuted: false,
+            isVideoOff: false,
+          };
+          this.participants.set(remoteId, participant);
+        }
+        participant.stream = stream;
+        participant.isVideoOff = false;
+        this.notifyParticipants();
+      };
+
+      // Handle ICE candidates
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          sendSignal('CANDIDATE', event.candidate.toJSON(), remoteId);
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        if (pc?.connectionState === 'disconnected' || pc?.connectionState === 'failed') {
+          this.participants.delete(remoteId);
+          this.peerConnections.delete(remoteId);
+          this.notifyParticipants();
+        }
+      };
+
+      return pc;
+    };
+
+    // Setup local BroadcastChannel for ultra-fast local tab testing too
+    if (typeof window !== 'undefined' && 'BroadcastChannel' in window) {
+      try {
+        this.broadcastChannel = new BroadcastChannel(`diwali_cam_${this.roomId}`);
+        this.broadcastChannel.onmessage = (event) => {
+          const data = event.data;
+          if (!data || data.senderId === this.localId) return;
+          if (data.type === 'CHAT') {
+            this.onChatMessage?.(data.message);
+          } else if (data.type === 'CELEBRATION_TRIGGER') {
+            this.onRoomCelebration?.(data);
+          }
+        };
+      } catch (e) {}
+    }
+
+    // Polling loop for cross-device signaling
+    const pollSignals = async () => {
+      if (this.isDestroyed) return;
+      try {
+        const res = await fetch(
+          `/api/diwali-cam/signal?room=${encodeURIComponent(this.roomId)}&peerId=${encodeURIComponent(
+            this.localId
+          )}&since=${this.lastSignalTimestamp}`
+        );
+
+        if (res.ok) {
+          const data = await res.json();
+          if (data.serverTime) {
+            this.lastSignalTimestamp = data.serverTime;
+          }
+
+          // 1. Process active peers in room
+          if (Array.isArray(data.peers)) {
+            data.peers.forEach((peer: { id: string; name: string }) => {
+              if (peer.id !== this.localId) {
+                // Ensure participant exists in state
+                if (!this.participants.has(peer.id)) {
+                  this.participants.set(peer.id, {
+                    id: peer.id,
+                    name: peer.name,
+                    isLocal: false,
+                    isMuted: false,
+                    isVideoOff: false,
+                  });
+                  this.notifyParticipants();
+                }
+
+                // If localId is lexicographically greater, initiate the offer
+                if (this.localId > peer.id && !this.peerConnections.has(peer.id)) {
+                  const pc = getOrCreatePeerConnection(peer.id, peer.name);
+                  pc.createOffer()
+                    .then((offer) => pc.setLocalDescription(offer).then(() => offer))
+                    .then((offer) => {
+                      sendSignal('OFFER', offer, peer.id);
+                    })
+                    .catch((err) => console.warn('Error creating WebRTC offer:', err));
+                }
+              }
+            });
+          }
+
+          // 2. Process incoming signaling messages
+          if (Array.isArray(data.messages)) {
+            for (const msg of data.messages) {
+              const senderId = msg.senderId;
+              const senderName = msg.senderName;
+
+              if (msg.type === 'JOIN') {
+                if (!this.participants.has(senderId)) {
+                  this.participants.set(senderId, {
+                    id: senderId,
+                    name: senderName,
+                    isLocal: false,
+                    isMuted: false,
+                    isVideoOff: false,
+                  });
+                  this.notifyParticipants();
+                }
+
+                // If this is the older/initiator peer, send an offer to the newcomer
+                const pc = getOrCreatePeerConnection(senderId, senderName);
+                if (pc.signalingState === 'stable') {
+                  const offer = await pc.createOffer();
+                  await pc.setLocalDescription(offer);
+                  sendSignal('OFFER', offer, senderId);
+                }
+              } else if (msg.type === 'OFFER' && msg.payload) {
+                const pc = getOrCreatePeerConnection(senderId, senderName);
+                await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                sendSignal('ANSWER', answer, senderId);
+              } else if (msg.type === 'ANSWER' && msg.payload) {
+                const pc = this.peerConnections.get(senderId);
+                if (pc && pc.signalingState !== 'stable') {
+                  await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+                }
+              } else if (msg.type === 'CANDIDATE' && msg.payload) {
+                const pc = this.peerConnections.get(senderId);
+                if (pc && pc.remoteDescription) {
+                  try {
+                    await pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+                  } catch (e) {}
+                }
+              } else if (msg.type === 'CHAT' && msg.payload) {
+                this.onChatMessage?.(msg.payload);
+              } else if (msg.type === 'CELEBRATION' && msg.payload) {
+                this.onRoomCelebration?.(msg.payload);
+              } else if (msg.type === 'LEAVE') {
+                this.participants.delete(senderId);
+                const pc = this.peerConnections.get(senderId);
+                if (pc) {
+                  pc.close();
+                  this.peerConnections.delete(senderId);
+                }
+                this.notifyParticipants();
+              }
+            }
+          }
+        }
+      } catch (err) {
+        // Poll retry
+      }
+    };
+
+    // Send initial join announce to room
+    sendSignal('JOIN');
+
+    // Poll every 1.5 seconds for active peers & incoming messages
+    this.pollIntervalId = setInterval(pollSignals, 1500);
+    pollSignals();
   }
 
   // Send a chat or reaction
@@ -252,16 +463,27 @@ export class LivekitPartyManager {
     // Dispatch locally
     this.onChatMessage?.(msg);
 
-    // Broadcast
+    // Broadcast via LiveKit if active
     if (this.isLiveKitActive && this.room) {
       const payload = new TextEncoder().encode(JSON.stringify({ type: 'CHAT', message: msg }));
       this.room.localParticipant.publishData(payload, { reliable: true });
-    } else if (this.broadcastChannel) {
-      this.broadcastChannel.postMessage({
-        type: 'CHAT',
-        senderId: this.localId,
-        message: msg,
-      });
+    } else {
+      // Broadcast via HTTP Signal & local BroadcastChannel
+      fetch('/api/diwali-cam/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          room: this.roomId,
+          senderId: this.localId,
+          senderName: this.localName,
+          type: 'CHAT',
+          payload: msg,
+        }),
+      }).catch(() => {});
+
+      if (this.broadcastChannel) {
+        this.broadcastChannel.postMessage({ type: 'CHAT', message: msg });
+      }
     }
   }
 
@@ -281,11 +503,22 @@ export class LivekitPartyManager {
     if (this.isLiveKitActive && this.room) {
       const payload = new TextEncoder().encode(JSON.stringify(evt));
       this.room.localParticipant.publishData(payload, { reliable: true });
-    } else if (this.broadcastChannel) {
-      this.broadcastChannel.postMessage({
-        ...evt,
-        senderId: this.localId,
-      });
+    } else {
+      fetch('/api/diwali-cam/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          room: this.roomId,
+          senderId: this.localId,
+          senderName: this.localName,
+          type: 'CELEBRATION',
+          payload: evt,
+        }),
+      }).catch(() => {});
+
+      if (this.broadcastChannel) {
+        this.broadcastChannel.postMessage(evt);
+      }
     }
   }
 
@@ -324,14 +557,33 @@ export class LivekitPartyManager {
 
   // Leave and teardown
   public leave() {
+    this.isDestroyed = true;
+
+    if (this.pollIntervalId) {
+      clearInterval(this.pollIntervalId);
+      this.pollIntervalId = null;
+    }
+
+    if (!this.isLiveKitActive) {
+      fetch('/api/diwali-cam/signal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          room: this.roomId,
+          senderId: this.localId,
+          senderName: this.localName,
+          type: 'LEAVE',
+        }),
+      }).catch(() => {});
+    }
+
     if (this.broadcastChannel) {
-      this.broadcastChannel.postMessage({
-        type: 'PEER_LEAVE',
-        senderId: this.localId,
-      });
       this.broadcastChannel.close();
       this.broadcastChannel = null;
     }
+
+    this.peerConnections.forEach((pc) => pc.close());
+    this.peerConnections.clear();
 
     if (this.room) {
       this.room.disconnect();

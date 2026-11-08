@@ -56,3 +56,4 @@ export interface RoomCelebrationEvent {
   senderName: string;
   timestamp: number;
 }
+

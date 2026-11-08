@@ -180,3 +180,4 @@ test('Diwali Cam: Gesture 5 — Index Finger triggers Floating Diya', () => {
   const gesture = classifyHand(pointingHand);
   assert.equal(gesture, 'diya');
 });
+
